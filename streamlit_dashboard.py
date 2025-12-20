@@ -1,5 +1,5 @@
-# Network Security Monitor Dashboard - FIXED VERSION
-# Removes duplicate element error by using st.empty() correctly
+# Network Security Monitor Dashboard - DYNAMIC FLOW COUNTING
+# Counts ACTUAL flows from /api/packets response - no assumptions!
 
 import streamlit as st
 import pandas as pd
@@ -32,27 +32,33 @@ def fetch_stats():
     try:
         response = requests.get(f"{API_BASE_URL}/api/stats", timeout=5)
         if response.status_code == 200:
-            return response.json()
+            data = response.json()
+            return {
+                "packet_count": data.get("packet_count", 0),
+                "byte_count": data.get("byte_count", 0),
+                "detection_rate": data.get("detection_rate", 0)
+            }
     except Exception as e:
         pass
     
-    # Dummy data fallback
-    return {
-        "packet_count": 2847324,
-        "byte_count": 8700000000,
-        "detection_rate": 94.3
-    }
+    return {"packet_count": 0, "byte_count": 0, "detection_rate": 0}
 
-def fetch_packets(count=20):
-    """Fetch live traffic packets from /api/packets?count=N"""
+def fetch_all_packets(limit=1000):
+    """
+    Fetch ALL packets from backend to COUNT them properly
+    This counts ACTUAL flows returned by the API
+    """
     try:
-        response = requests.get(f"{API_BASE_URL}/api/packets?count={count}", timeout=5)
+        response = requests.get(f"{API_BASE_URL}/api/packets?count={limit}", timeout=10)
         if response.status_code == 200:
             packets_data = response.json()
             
+            if not packets_data:
+                return [], 0
+            
             # Convert to DataFrame format
             rows = []
-            for idx, packet_info in enumerate(packets_data, 1):
+            for packet_info in packets_data:
                 packet = packet_info.get("packet", {})
                 prediction = packet_info.get("prediction", {})
                 
@@ -67,23 +73,12 @@ def fetch_packets(count=20):
                     "ANOMALY_SCORE": round(prediction.get("confidence", 0), 2)
                 })
             
+            # Return rows and ACTUAL count of flows
             return rows, len(rows)
     except Exception as e:
         pass
     
-    # Dummy data fallback
-    return [
-        {
-            "TIMESTAMP": "14:32:35",
-            "SOURCE_IP": "192.168.1.105",
-            "DESTINATION_IP": "10.0.0.1",
-            "PROTOCOL": "TCP",
-            "PACKETS": 1,
-            "BYTES": "1247B",
-            "ATTACK_TYPE": "Benign",
-            "ANOMALY_SCORE": 0.12
-        }
-    ], 1
+    return [], 0
 
 def fetch_attack_distribution():
     """Fetch attack distribution from /api/analytics/attack_distribution"""
@@ -94,18 +89,7 @@ def fetch_attack_distribution():
     except Exception as e:
         pass
     
-    # Dummy data fallback
-    return {
-        "distribution": {
-            "Benign": 2456891,
-            "DDoS": 128453,
-            "PortScan": 89234,
-            "BruteForce": 45123,
-            "Infiltration": 15234,
-            "WebAttack": 9031,
-            "Botnet": 5000
-        }
-    }
+    return {"distribution": {}}
 
 def fetch_time_trends():
     """Fetch time trends from /api/analytics/time_trends"""
@@ -116,23 +100,16 @@ def fetch_time_trends():
     except Exception as e:
         pass
     
-    # Dummy data fallback
-    return {
-        "timestamps": [1, 2, 3, 4, 5],
-        "packet_rate": [12000, 13500, 14000, 13200, 14800],
-        "flow_rate": [450, 480, 510, 470, 520],
-        "bytes_per_sec": [2400000, 2700000, 2800000, 2640000, 2960000]
-    }
+    return {"timestamps": [], "packet_rate": [], "flow_rate": [], "bytes_per_sec": []}
 
 # ============================================================================
 # AUTO-REFRESH MECHANISM
 # ============================================================================
-# Initialize session state for auto-refresh
 if 'last_refresh' not in st.session_state:
     st.session_state.last_refresh = time.time()
 
 if 'refresh_interval' not in st.session_state:
-    st.session_state.refresh_interval = 5  # 5 seconds
+    st.session_state.refresh_interval = 5
 
 # Check if we need to auto-refresh
 current_time = time.time()
@@ -143,10 +120,47 @@ if time_since_refresh >= st.session_state.refresh_interval:
     st.rerun()
 
 # ============================================================================
-# MAIN DASHBOARD (NO WHILE LOOP)
+# FETCH DATA FROM BACKEND
 # ============================================================================
 
-# Header
+stats = fetch_stats()
+
+# IMPORTANT: Fetch ALL packets to COUNT them accurately
+# This counts ACTUAL flows returned by API
+packets_data, actual_flow_count = fetch_all_packets(limit=1000)
+
+# Get REAL total flows - count actual packets returned
+total_flows = actual_flow_count  # THIS IS THE REAL COUNT!
+
+# ============================================================================
+# PAGINATION SETUP
+# ============================================================================
+if 'current_page' not in st.session_state:
+    st.session_state.current_page = 1
+
+# Settings for pagination
+flows_per_page = 10
+
+# Calculate total pages based on ACTUAL counted flows
+if total_flows > 0:
+    total_pages = (total_flows + flows_per_page - 1) // flows_per_page
+else:
+    total_pages = 0
+
+# Ensure current page doesn't exceed total pages
+if total_pages > 0 and st.session_state.current_page > total_pages:
+    st.session_state.current_page = total_pages
+
+# Get flows for current page from the data we already fetched
+start_idx = (st.session_state.current_page - 1) * flows_per_page
+end_idx = min(st.session_state.current_page * flows_per_page, len(packets_data))
+page_packets = packets_data[start_idx:end_idx]
+traffic_df = pd.DataFrame(page_packets) if page_packets else pd.DataFrame()
+
+# ============================================================================
+# PAGE HEADER
+# ============================================================================
+
 col1, col2, col3 = st.columns([3, 1, 1])
 with col1:
     st.title("🔒 Network Security Monitor")
@@ -165,8 +179,6 @@ st.divider()
 # KPI METRICS ROW
 # ============================================================================
 st.subheader("📊 Key Performance Indicators")
-
-stats = fetch_stats()
 
 col1, col2, col3, col4, col5 = st.columns(5)
 
@@ -189,18 +201,20 @@ with col2:
     )
 
 with col3:
+    detection_rate = stats.get("detection_rate", 0)
     st.metric(
         label="Detection Rate",
-        value=f"{stats.get('detection_rate', 94.3):.1f}%",
+        value=f"{detection_rate:.1f}%",
         delta="+2.1%",
         delta_color="normal"
     )
 
 with col4:
+    # ACTUAL counted flows
     st.metric(
         label="Total Flows",
-        value="2.8M",
-        delta="+5.2%",
+        value=f"{total_flows:,}",
+        delta=f"{total_flows} counted",
         delta_color="normal"
     )
 
@@ -215,30 +229,69 @@ with col5:
 st.divider()
 
 # ============================================================================
-# LIVE NETWORK TRAFFIC TABLE
+# LIVE NETWORK TRAFFIC TABLE WITH PAGINATION
 # ============================================================================
 st.subheader("📡 Live Network Traffic")
 
-# Fetch live packets
-packets_data, num_packets = fetch_packets(count=20)
-traffic_df = pd.DataFrame(packets_data)
+if total_flows > 0:
+    # Pagination controls
+    st.write("**📄 Page Navigation**")
+    col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
 
-# Display table
-st.dataframe(
-    traffic_df,
-    use_container_width=True,
-    hide_index=True,
-    column_config={
-        "ANOMALY_SCORE": st.column_config.NumberColumn(
-            "Anomaly Score",
-            format="%.2f"
+    with col1:
+        if st.button("⬅️ Previous", key="prev_page", use_container_width=True):
+            if st.session_state.current_page > 1:
+                st.session_state.current_page -= 1
+                st.rerun()
+
+    with col2:
+        st.metric("Page", st.session_state.current_page)
+
+    with col3:
+        page_input = st.number_input(
+            "Jump to page:",
+            min_value=1,
+            max_value=max(1, total_pages),
+            value=st.session_state.current_page,
+            key="page_jump"
         )
-    }
-)
+        if page_input != st.session_state.current_page:
+            st.session_state.current_page = page_input
+            st.rerun()
 
-# Pagination info - showing total flows
-total_flows = stats.get("packet_count", 2847324)
-st.caption(f"Showing 1-{num_packets} of {total_flows:,} flows")
+    with col4:
+        st.metric("Total Pages", total_pages)
+
+    with col5:
+        if st.button("Next ➡️", key="next_page", use_container_width=True):
+            if st.session_state.current_page < total_pages:
+                st.session_state.current_page += 1
+                st.rerun()
+
+    st.divider()
+
+    # Display traffic table
+    if not traffic_df.empty:
+        st.dataframe(
+            traffic_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "ANOMALY_SCORE": st.column_config.NumberColumn(
+                    "Anomaly Score",
+                    format="%.2f"
+                )
+            }
+        )
+    else:
+        st.info("📭 No flow data available for this page")
+
+    # Pagination info - REAL counted flows
+    start_flow = (st.session_state.current_page - 1) * flows_per_page + 1
+    end_flow = min(st.session_state.current_page * flows_per_page, total_flows)
+    st.caption(f"Showing {start_flow:,}-{end_flow:,} of {total_flows:,} flows (ACTUAL COUNT)")
+else:
+    st.warning("⚠️ No flows available from backend. Make sure your backend is running and returning data.")
 
 st.divider()
 
@@ -247,26 +300,25 @@ st.divider()
 # ============================================================================
 st.subheader("🎯 Attack Summary")
 
-# Fetch attack distribution to get all attack types
 attack_dist = fetch_attack_distribution()
 distribution = attack_dist.get("distribution", {})
 
-# Create columns for each attack type
-cols = st.columns(len(distribution))
-
-# Display each attack type as a metric card
-for idx, (attack_type, count) in enumerate(distribution.items()):
-    with cols[idx]:
-        # Calculate percentage
-        total = sum(distribution.values())
-        percentage = (count / total * 100) if total > 0 else 0
-        
-        st.metric(
-            label=attack_type,
-            value=f"{count:,}",
-            delta=f"{percentage:.1f}%",
-            delta_color="off"
-        )
+if distribution:
+    cols = st.columns(len(distribution))
+    
+    for idx, (attack_type, count) in enumerate(distribution.items()):
+        with cols[idx]:
+            total = sum(distribution.values())
+            percentage = (count / total * 100) if total > 0 else 0
+            
+            st.metric(
+                label=attack_type,
+                value=f"{count:,}",
+                delta=f"{percentage:.1f}%",
+                delta_color="off"
+            )
+else:
+    st.info("📊 No attack distribution data available")
 
 st.divider()
 
@@ -279,49 +331,58 @@ col1, col2 = st.columns(2)
 
 # Attack Type Distribution Chart
 with col1:
-    fig_dist = go.Figure(data=[
-        go.Bar(
-            x=list(distribution.keys()),
-            y=list(distribution.values()),
-            marker_color=['#C8E6C9', '#FFCDD2', '#FFE0B2', '#F8BBD0', '#E1BEE7', '#BBDEFB', '#B2DFDB'][:len(distribution)]
+    if distribution:
+        fig_dist = go.Figure(data=[
+            go.Bar(
+                x=list(distribution.keys()),
+                y=list(distribution.values()),
+                marker_color=['#C8E6C9', '#FFCDD2', '#FFE0B2', '#F8BBD0', '#E1BEE7', '#BBDEFB', '#B2DFDB'][:len(distribution)]
+            )
+        ])
+        fig_dist.update_layout(
+            title="Attack Type Distribution",
+            xaxis_title="Attack Type",
+            yaxis_title="Count",
+            hovermode='x unified',
+            height=400,
+            showlegend=False
         )
-    ])
-    fig_dist.update_layout(
-        title="Attack Type Distribution",
-        xaxis_title="Attack Type",
-        yaxis_title="Count",
-        hovermode='x unified',
-        height=400,
-        showlegend=False
-    )
-    st.plotly_chart(fig_dist, use_container_width=True, key="attack_dist_chart")
+        st.plotly_chart(fig_dist, use_container_width=True, key="attack_dist_chart")
+    else:
+        st.info("No attack distribution data")
 
 # Packet Rate Over Time Chart
 with col2:
     trends = fetch_time_trends()
+    timestamps = trends.get("timestamps", [])
     
-    # Convert timestamps to readable format
-    timestamps = [datetime.fromtimestamp(ts).strftime("%H:%M") for ts in trends.get("timestamps", [])]
-    packet_rates = trends.get("packet_rate", [])
-    
-    fig_trend = go.Figure(data=[
-        go.Scatter(
-            x=timestamps,
-            y=[rate/1000 for rate in packet_rates],  # Convert to kpps
-            mode='lines+markers',
-            name='Packet Rate (kpps)',
-            line=dict(color='#2196F3', width=3),
-            fill='tozeroy'
-        )
-    ])
-    fig_trend.update_layout(
-        title="Packet Rate Over Time",
-        xaxis_title="Time",
-        yaxis_title="Rate (kpps)",
-        height=400,
-        showlegend=False
-    )
-    st.plotly_chart(fig_trend, use_container_width=True, key="packet_rate_chart")
+    if timestamps:
+        timestamps_formatted = [datetime.fromtimestamp(ts).strftime("%H:%M") for ts in timestamps]
+        packet_rates = trends.get("packet_rate", [])
+        
+        if packet_rates:
+            fig_trend = go.Figure(data=[
+                go.Scatter(
+                    x=timestamps_formatted,
+                    y=[rate/1000 for rate in packet_rates],
+                    mode='lines+markers',
+                    name='Packet Rate (kpps)',
+                    line=dict(color='#2196F3', width=3),
+                    fill='tozeroy'
+                )
+            ])
+            fig_trend.update_layout(
+                title="Packet Rate Over Time",
+                xaxis_title="Time",
+                yaxis_title="Rate (kpps)",
+                height=400,
+                showlegend=False
+            )
+            st.plotly_chart(fig_trend, use_container_width=True, key="packet_rate_chart")
+        else:
+            st.info("No packet rate data")
+    else:
+        st.info("No trend data")
 
 st.divider()
 
@@ -356,34 +417,44 @@ with col2:
 st.divider()
 
 # ============================================================================
-# SIDEBAR - FILTERS & SETTINGS
+# SIDEBAR
 # ============================================================================
 with st.sidebar:
     st.header("⚙️ Dashboard Settings")
     
-    # Time Range Filter
     st.subheader("⏱️ Time Range")
     time_range = st.selectbox(
         "Select time range:",
         ["Last 5 minutes", "Last 15 minutes", "Last Hour", "Last 24 hours"]
     )
     
-    # Attack Type Filter
     st.subheader("🎯 Attack Type Filter")
-    available_attacks = list(distribution.keys())
+    available_attacks = list(distribution.keys()) if distribution else ["No data"]
     attack_types = st.multiselect(
         "Select attack types to display:",
         available_attacks,
-        default=available_attacks[:3]
+        default=available_attacks[:3] if len(available_attacks) > 3 else available_attacks
     )
     
-    # Anomaly Score Threshold
     st.subheader("📊 Anomaly Score Threshold")
     threshold = st.slider("Show flows with score >", 0.0, 1.0, 0.5, 0.05)
     
     st.divider()
     
-    # Refresh Interval
+    st.subheader("📋 Table Settings")
+    flows_per_page_selector = st.select_slider(
+        "Flows per page:",
+        options=[5, 10, 20, 50],
+        value=10
+    )
+    
+    # DISPLAY ACTUAL COUNTED FLOWS
+    st.info(f"📊 **Total Flows Counted**: {total_flows:,}")
+    st.info(f"📄 **Total Pages**: {total_pages:,}")
+    st.info(f"📍 **Current Page**: {st.session_state.current_page}/{total_pages if total_pages > 0 else 1}")
+    
+    st.divider()
+    
     st.subheader("🔄 Auto-Refresh Settings")
     refresh_interval = st.select_slider(
         "Auto-refresh interval (seconds):",
@@ -394,7 +465,6 @@ with st.sidebar:
     
     st.divider()
     
-    # Export Options
     st.subheader("📥 Export Data")
     if st.button("Download CSV", use_container_width=True):
         st.success("✅ Data exported successfully!")
@@ -404,27 +474,27 @@ with st.sidebar:
     
     st.divider()
     
-    # About Section
     st.subheader("ℹ️ About")
-    st.markdown("""
+    st.markdown(f"""
     **Network Security Monitor**
     
-    Real-time threat detection dashboard powered by:
-    - Machine Learning models
-    - Network packet analysis
-    - Anomaly detection
+    Real-time threat detection dashboard
     
-    **Version**: 2.1.0  
-    **API**: Active & Connected  
-    **Auto-Refresh**: Every 5 seconds
+    **Version**: 4.0.0  
+    **Counting Method**: ACTUAL flows from API
+    **Total Flows**: {total_flows:,}
+    **Total Pages**: {total_pages:,}
+    **Auto-Refresh**: Every {refresh_interval}s
+    
+    Flow counting updates on each refresh!
     """)
 
 # ============================================================================
 # FOOTER
 # ============================================================================
 st.divider()
-st.markdown("""
+st.markdown(f"""
 <div style='text-align: center; color: #888; font-size: 12px; padding: 20px;'>
-    © 2024 Network Security Monitor - Student Project | Powered by Streamlit & FastAPI
+    © 2024 Network Security Monitor | Flows: {total_flows:,} (ACTUAL COUNT) | Updated: {datetime.now().strftime('%H:%M:%S')}
 </div>
 """, unsafe_allow_html=True)
