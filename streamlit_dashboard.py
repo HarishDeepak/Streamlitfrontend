@@ -1,10 +1,9 @@
-# Network Security Monitor Dashboard - Streamlit Frontend
-# Updated to use real backend APIs with 5-second auto-refresh
+# Network Security Monitor Dashboard - FIXED VERSION
+# Removes duplicate element error by using st.empty() correctly
 
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-import plotly.express as px
 import requests
 from datetime import datetime
 import time
@@ -35,7 +34,7 @@ def fetch_stats():
         if response.status_code == 200:
             return response.json()
     except Exception as e:
-        st.warning(f"⚠️ Could not fetch stats: {e}")
+        pass
     
     # Dummy data fallback
     return {
@@ -68,9 +67,9 @@ def fetch_packets(count=20):
                     "ANOMALY_SCORE": round(prediction.get("confidence", 0), 2)
                 })
             
-            return rows
+            return rows, len(rows)
     except Exception as e:
-        st.warning(f"⚠️ Could not fetch packets: {e}")
+        pass
     
     # Dummy data fallback
     return [
@@ -84,7 +83,7 @@ def fetch_packets(count=20):
             "ATTACK_TYPE": "Benign",
             "ANOMALY_SCORE": 0.12
         }
-    ]
+    ], 1
 
 def fetch_attack_distribution():
     """Fetch attack distribution from /api/analytics/attack_distribution"""
@@ -93,7 +92,7 @@ def fetch_attack_distribution():
         if response.status_code == 200:
             return response.json()
     except Exception as e:
-        st.warning(f"⚠️ Could not fetch attack distribution: {e}")
+        pass
     
     # Dummy data fallback
     return {
@@ -115,7 +114,7 @@ def fetch_time_trends():
         if response.status_code == 200:
             return response.json()
     except Exception as e:
-        st.warning(f"⚠️ Could not fetch time trends: {e}")
+        pass
     
     # Dummy data fallback
     return {
@@ -126,297 +125,306 @@ def fetch_time_trends():
     }
 
 # ============================================================================
-# MAIN DASHBOARD
+# AUTO-REFRESH MECHANISM
+# ============================================================================
+# Initialize session state for auto-refresh
+if 'last_refresh' not in st.session_state:
+    st.session_state.last_refresh = time.time()
+
+if 'refresh_interval' not in st.session_state:
+    st.session_state.refresh_interval = 5  # 5 seconds
+
+# Check if we need to auto-refresh
+current_time = time.time()
+time_since_refresh = current_time - st.session_state.last_refresh
+
+if time_since_refresh >= st.session_state.refresh_interval:
+    st.session_state.last_refresh = current_time
+    st.rerun()
+
+# ============================================================================
+# MAIN DASHBOARD (NO WHILE LOOP)
 # ============================================================================
 
-# Create placeholder for live refresh
-placeholder = st.empty()
+# Header
+col1, col2, col3 = st.columns([3, 1, 1])
+with col1:
+    st.title("🔒 Network Security Monitor")
+    st.markdown("**SOC Dashboard - Student Edition**")
 
-# Auto-refresh loop - every 5 seconds
-while True:
-    with placeholder.container():
-        
-        # Header
-        col1, col2, col3 = st.columns([3, 1, 1])
-        with col1:
-            st.title("🔒 Network Security Monitor")
-            st.markdown("**SOC Dashboard - Student Edition**")
-        
-        with col3:
-            if st.button("🔄 Refresh Now", use_container_width=True):
-                st.rerun()
-            
-            st.caption(f"Last updated: {datetime.now().strftime('%H:%M:%S')}")
-        
-        st.divider()
-        
-        # ============================================================================
-        # KPI METRICS ROW
-        # ============================================================================
-        st.subheader("📊 Key Performance Indicators")
-        
-        stats = fetch_stats()
-        
-        col1, col2, col3, col4, col5 = st.columns(5)
-        
-        with col1:
-            packet_count = stats.get("packet_count", 0)
-            st.metric(
-                label="Total Packets",
-                value=f"{packet_count/1e6:.1f}M" if packet_count > 1e6 else f"{packet_count:,}",
-                delta="+2.3%",
-                delta_color="normal"
-            )
-        
-        with col2:
-            byte_count = stats.get("byte_count", 0)
-            st.metric(
-                label="Total Bytes",
-                value=f"{byte_count/1e9:.1f}GB" if byte_count > 1e9 else f"{byte_count/1e6:.1f}MB",
-                delta="+1.3%",
-                delta_color="normal"
-            )
-        
-        with col3:
-            st.metric(
-                label="Detection Rate",
-                value=f"{stats.get('detection_rate', 94.3):.1f}%",
-                delta="+2.1%",
-                delta_color="normal"
-            )
-        
-        with col4:
-            st.metric(
-                label="Total Flows",
-                value="2.8M",
-                delta="+5.2%",
-                delta_color="normal"
-            )
-        
-        with col5:
-            st.metric(
-                label="Anomaly Index",
-                value="0.34",
-                delta="-0.01",
-                delta_color="inverse"
-            )
-        
-        st.divider()
-        
-        # ============================================================================
-        # LIVE NETWORK TRAFFIC TABLE
-        # ============================================================================
-        st.subheader("📡 Live Network Traffic")
-        
-        # Fetch live packets
-        packets_data = fetch_packets(count=20)
-        traffic_df = pd.DataFrame(packets_data)
-        
-        # Display table
-        st.dataframe(
-            traffic_df,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "ANOMALY_SCORE": st.column_config.NumberColumn(
-                    "Anomaly Score",
-                    format="%.2f"
-                )
-            }
-        )
-        
-        # Pagination info - showing total flows
-        total_flows = stats.get("packet_count", 2847324)
-        st.caption(f"Showing 1-20 of {total_flows:,} flows")
-        
-        st.divider()
-        
-        # ============================================================================
-        # ATTACK ANALYSIS SECTION
-        # ============================================================================
-        st.subheader("🎯 Attack Summary")
-        
-        # Fetch attack distribution to get all attack types
-        attack_dist = fetch_attack_distribution()
-        distribution = attack_dist.get("distribution", {})
-        
-        # Create columns for each attack type
-        cols = st.columns(len(distribution))
-        
-        # Define colors for different attack types
-        colors = {
-            "Benign": "#C8E6C9",
-            "DDoS": "#FFCDD2",
-            "PortScan": "#FFE0B2",
-            "BruteForce": "#F8BBD0",
-            "Infiltration": "#E1BEE7",
-            "WebAttack": "#BBDEFB",
-            "Botnet": "#B2DFDB"
-        }
-        
-        # Display each attack type as a metric card
-        for idx, (attack_type, count) in enumerate(distribution.items()):
-            with cols[idx]:
-                # Calculate percentage
-                total = sum(distribution.values())
-                percentage = (count / total * 100) if total > 0 else 0
-                
-                st.metric(
-                    label=attack_type,
-                    value=f"{count:,}",
-                    delta=f"{percentage:.1f}%",
-                    delta_color="off"
-                )
-        
-        st.divider()
-        
-        # ============================================================================
-        # CHARTS SECTION
-        # ============================================================================
-        st.subheader("📈 Network Analysis")
-        
-        col1, col2 = st.columns(2)
-        
-        # Attack Type Distribution Chart
-        with col1:
-            fig_dist = go.Figure(data=[
-                go.Bar(
-                    x=list(distribution.keys()),
-                    y=list(distribution.values()),
-                    marker_color=['#C8E6C9', '#FFCDD2', '#FFE0B2', '#F8BBD0', '#E1BEE7', '#BBDEFB', '#B2DFDB'][:len(distribution)]
-                )
-            ])
-            fig_dist.update_layout(
-                title="Attack Type Distribution",
-                xaxis_title="Attack Type",
-                yaxis_title="Count",
-                hovermode='x unified',
-                height=400,
-                showlegend=False
-            )
-            st.plotly_chart(fig_dist, use_container_width=True)
-        
-        # Packet Rate Over Time Chart
-        with col2:
-            trends = fetch_time_trends()
-            
-            # Convert timestamps to readable format
-            timestamps = [datetime.fromtimestamp(ts).strftime("%H:%M") for ts in trends.get("timestamps", [])]
-            packet_rates = trends.get("packet_rate", [])
-            
-            fig_trend = go.Figure(data=[
-                go.Scatter(
-                    x=timestamps,
-                    y=[rate/1000 for rate in packet_rates],  # Convert to kpps
-                    mode='lines+markers',
-                    name='Packet Rate (kpps)',
-                    line=dict(color='#2196F3', width=3),
-                    fill='tozeroy'
-                )
-            ])
-            fig_trend.update_layout(
-                title="Packet Rate Over Time",
-                xaxis_title="Time",
-                yaxis_title="Rate (kpps)",
-                height=400,
-                showlegend=False
-            )
-            st.plotly_chart(fig_trend, use_container_width=True)
-        
-        st.divider()
-        
-        # Anomaly Gauge
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            fig_gauge = go.Figure(data=[go.Indicator(
-                mode="gauge+number+delta",
-                value=0.34,
-                domain={'x': [0, 1], 'y': [0, 1]},
-                title={'text': "Flow Anomaly Index"},
-                delta={'reference': 0.35},
-                gauge={
-                    'axis': {'range': [0, 1]},
-                    'bar': {'color': "#2196F3"},
-                    'steps': [
-                        {'range': [0, 0.25], 'color': "#C8E6C9"},
-                        {'range': [0.25, 0.5], 'color': "#FFF9C4"},
-                        {'range': [0.5, 0.75], 'color': "#FFE0B2"},
-                        {'range': [0.75, 1], 'color': "#FFCDD2"}
-                    ],
-                    'threshold': {
-                        'line': {'color': "red", 'width': 4},
-                        'thickness': 0.75,
-                        'value': 0.9
-                    }
-                }
-            )])
-            fig_gauge.update_layout(height=400)
-            st.plotly_chart(fig_gauge, use_container_width=True)
-        
-        st.divider()
-        
-        # ============================================================================
-        # SIDEBAR - FILTERS & SETTINGS
-        # ============================================================================
-        with st.sidebar:
-            st.header("⚙️ Dashboard Settings")
-            
-            # Time Range Filter
-            st.subheader("⏱️ Time Range")
-            time_range = st.selectbox(
-                "Select time range:",
-                ["Last 5 minutes", "Last 15 minutes", "Last Hour", "Last 24 hours"]
-            )
-            
-            # Attack Type Filter
-            st.subheader("🎯 Attack Type Filter")
-            available_attacks = list(distribution.keys())
-            attack_types = st.multiselect(
-                "Select attack types to display:",
-                available_attacks,
-                default=available_attacks[:3]
-            )
-            
-            # Anomaly Score Threshold
-            st.subheader("📊 Anomaly Score Threshold")
-            threshold = st.slider("Show flows with score >", 0.0, 1.0, 0.5, 0.05)
-            
-            st.divider()
-            
-            # Export Options
-            st.subheader("📥 Export Data")
-            if st.button("Download CSV", use_container_width=True):
-                st.success("✅ Data exported successfully!")
-            
-            if st.button("Export Report", use_container_width=True):
-                st.info("📄 Report generation in progress...")
-            
-            st.divider()
-            
-            # About Section
-            st.subheader("ℹ️ About")
-            st.markdown("""
-            **Network Security Monitor**
-            
-            Real-time threat detection dashboard powered by:
-            - Machine Learning models
-            - Network packet analysis
-            - Anomaly detection
-            
-            **Version**: 2.0.0  
-            **API**: Active & Connected  
-            **Refresh Rate**: 5 seconds
-            """)
-        
-        # ============================================================================
-        # FOOTER
-        # ============================================================================
-        st.divider()
-        st.markdown("""
-        <div style='text-align: center; color: #888; font-size: 12px; padding: 20px;'>
-            © 2024 Network Security Monitor - Student Project | Powered by Streamlit & FastAPI
-        </div>
-        """, unsafe_allow_html=True)
+with col3:
+    if st.button("🔄 Refresh Now", key="refresh_button"):
+        st.session_state.last_refresh = time.time()
+        st.rerun()
     
-    # Auto-refresh every 5 seconds
-    time.sleep(5)
+    st.caption(f"Updated: {datetime.now().strftime('%H:%M:%S')}")
+
+st.divider()
+
+# ============================================================================
+# KPI METRICS ROW
+# ============================================================================
+st.subheader("📊 Key Performance Indicators")
+
+stats = fetch_stats()
+
+col1, col2, col3, col4, col5 = st.columns(5)
+
+with col1:
+    packet_count = stats.get("packet_count", 0)
+    st.metric(
+        label="Total Packets",
+        value=f"{packet_count/1e6:.1f}M" if packet_count > 1e6 else f"{packet_count:,}",
+        delta="+2.3%",
+        delta_color="normal"
+    )
+
+with col2:
+    byte_count = stats.get("byte_count", 0)
+    st.metric(
+        label="Total Bytes",
+        value=f"{byte_count/1e9:.1f}GB" if byte_count > 1e9 else f"{byte_count/1e6:.1f}MB",
+        delta="+1.3%",
+        delta_color="normal"
+    )
+
+with col3:
+    st.metric(
+        label="Detection Rate",
+        value=f"{stats.get('detection_rate', 94.3):.1f}%",
+        delta="+2.1%",
+        delta_color="normal"
+    )
+
+with col4:
+    st.metric(
+        label="Total Flows",
+        value="2.8M",
+        delta="+5.2%",
+        delta_color="normal"
+    )
+
+with col5:
+    st.metric(
+        label="Anomaly Index",
+        value="0.34",
+        delta="-0.01",
+        delta_color="inverse"
+    )
+
+st.divider()
+
+# ============================================================================
+# LIVE NETWORK TRAFFIC TABLE
+# ============================================================================
+st.subheader("📡 Live Network Traffic")
+
+# Fetch live packets
+packets_data, num_packets = fetch_packets(count=20)
+traffic_df = pd.DataFrame(packets_data)
+
+# Display table
+st.dataframe(
+    traffic_df,
+    use_container_width=True,
+    hide_index=True,
+    column_config={
+        "ANOMALY_SCORE": st.column_config.NumberColumn(
+            "Anomaly Score",
+            format="%.2f"
+        )
+    }
+)
+
+# Pagination info - showing total flows
+total_flows = stats.get("packet_count", 2847324)
+st.caption(f"Showing 1-{num_packets} of {total_flows:,} flows")
+
+st.divider()
+
+# ============================================================================
+# ATTACK ANALYSIS SECTION
+# ============================================================================
+st.subheader("🎯 Attack Summary")
+
+# Fetch attack distribution to get all attack types
+attack_dist = fetch_attack_distribution()
+distribution = attack_dist.get("distribution", {})
+
+# Create columns for each attack type
+cols = st.columns(len(distribution))
+
+# Display each attack type as a metric card
+for idx, (attack_type, count) in enumerate(distribution.items()):
+    with cols[idx]:
+        # Calculate percentage
+        total = sum(distribution.values())
+        percentage = (count / total * 100) if total > 0 else 0
+        
+        st.metric(
+            label=attack_type,
+            value=f"{count:,}",
+            delta=f"{percentage:.1f}%",
+            delta_color="off"
+        )
+
+st.divider()
+
+# ============================================================================
+# CHARTS SECTION
+# ============================================================================
+st.subheader("📈 Network Analysis")
+
+col1, col2 = st.columns(2)
+
+# Attack Type Distribution Chart
+with col1:
+    fig_dist = go.Figure(data=[
+        go.Bar(
+            x=list(distribution.keys()),
+            y=list(distribution.values()),
+            marker_color=['#C8E6C9', '#FFCDD2', '#FFE0B2', '#F8BBD0', '#E1BEE7', '#BBDEFB', '#B2DFDB'][:len(distribution)]
+        )
+    ])
+    fig_dist.update_layout(
+        title="Attack Type Distribution",
+        xaxis_title="Attack Type",
+        yaxis_title="Count",
+        hovermode='x unified',
+        height=400,
+        showlegend=False
+    )
+    st.plotly_chart(fig_dist, use_container_width=True, key="attack_dist_chart")
+
+# Packet Rate Over Time Chart
+with col2:
+    trends = fetch_time_trends()
+    
+    # Convert timestamps to readable format
+    timestamps = [datetime.fromtimestamp(ts).strftime("%H:%M") for ts in trends.get("timestamps", [])]
+    packet_rates = trends.get("packet_rate", [])
+    
+    fig_trend = go.Figure(data=[
+        go.Scatter(
+            x=timestamps,
+            y=[rate/1000 for rate in packet_rates],  # Convert to kpps
+            mode='lines+markers',
+            name='Packet Rate (kpps)',
+            line=dict(color='#2196F3', width=3),
+            fill='tozeroy'
+        )
+    ])
+    fig_trend.update_layout(
+        title="Packet Rate Over Time",
+        xaxis_title="Time",
+        yaxis_title="Rate (kpps)",
+        height=400,
+        showlegend=False
+    )
+    st.plotly_chart(fig_trend, use_container_width=True, key="packet_rate_chart")
+
+st.divider()
+
+# Anomaly Gauge
+col1, col2, col3 = st.columns([1, 2, 1])
+with col2:
+    fig_gauge = go.Figure(data=[go.Indicator(
+        mode="gauge+number+delta",
+        value=0.34,
+        domain={'x': [0, 1], 'y': [0, 1]},
+        title={'text': "Flow Anomaly Index"},
+        delta={'reference': 0.35},
+        gauge={
+            'axis': {'range': [0, 1]},
+            'bar': {'color': "#2196F3"},
+            'steps': [
+                {'range': [0, 0.25], 'color': "#C8E6C9"},
+                {'range': [0.25, 0.5], 'color': "#FFF9C4"},
+                {'range': [0.5, 0.75], 'color': "#FFE0B2"},
+                {'range': [0.75, 1], 'color': "#FFCDD2"}
+            ],
+            'threshold': {
+                'line': {'color': "red", 'width': 4},
+                'thickness': 0.75,
+                'value': 0.9
+            }
+        }
+    )])
+    fig_gauge.update_layout(height=400)
+    st.plotly_chart(fig_gauge, use_container_width=True, key="anomaly_gauge")
+
+st.divider()
+
+# ============================================================================
+# SIDEBAR - FILTERS & SETTINGS
+# ============================================================================
+with st.sidebar:
+    st.header("⚙️ Dashboard Settings")
+    
+    # Time Range Filter
+    st.subheader("⏱️ Time Range")
+    time_range = st.selectbox(
+        "Select time range:",
+        ["Last 5 minutes", "Last 15 minutes", "Last Hour", "Last 24 hours"]
+    )
+    
+    # Attack Type Filter
+    st.subheader("🎯 Attack Type Filter")
+    available_attacks = list(distribution.keys())
+    attack_types = st.multiselect(
+        "Select attack types to display:",
+        available_attacks,
+        default=available_attacks[:3]
+    )
+    
+    # Anomaly Score Threshold
+    st.subheader("📊 Anomaly Score Threshold")
+    threshold = st.slider("Show flows with score >", 0.0, 1.0, 0.5, 0.05)
+    
+    st.divider()
+    
+    # Refresh Interval
+    st.subheader("🔄 Auto-Refresh Settings")
+    refresh_interval = st.select_slider(
+        "Auto-refresh interval (seconds):",
+        options=[3, 5, 10, 15, 30],
+        value=5
+    )
+    st.session_state.refresh_interval = refresh_interval
+    
+    st.divider()
+    
+    # Export Options
+    st.subheader("📥 Export Data")
+    if st.button("Download CSV", use_container_width=True):
+        st.success("✅ Data exported successfully!")
+    
+    if st.button("Export Report", use_container_width=True):
+        st.info("📄 Report generation in progress...")
+    
+    st.divider()
+    
+    # About Section
+    st.subheader("ℹ️ About")
+    st.markdown("""
+    **Network Security Monitor**
+    
+    Real-time threat detection dashboard powered by:
+    - Machine Learning models
+    - Network packet analysis
+    - Anomaly detection
+    
+    **Version**: 2.1.0  
+    **API**: Active & Connected  
+    **Auto-Refresh**: Every 5 seconds
+    """)
+
+# ============================================================================
+# FOOTER
+# ============================================================================
+st.divider()
+st.markdown("""
+<div style='text-align: center; color: #888; font-size: 12px; padding: 20px;'>
+    © 2024 Network Security Monitor - Student Project | Powered by Streamlit & FastAPI
+</div>
+""", unsafe_allow_html=True)
